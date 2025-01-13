@@ -1,5 +1,5 @@
 import './styles.scss';
-import { createApp, defineComponent, shallowRef, computed, h } from 'vue/dist/vue.esm-bundler.js';
+import { createApp, defineComponent, shallowRef, computed, h, nextTick } from 'vue/dist/vue.esm-bundler.js';
 import MarkdownIt from 'markdown-it';
 import TextLineStream from 'textlinestream';
 
@@ -313,6 +313,9 @@ async function* sendSSEPostRequest(url, fetchOptions) {
   }
 };
 
+const usp = new URLSearchParams (window.location.search);
+const initial_query = usp.get ('q'), initial_msg = initial_query || usp.get ('m') || '';
+
 const mainApp = createApp({
   components: {
     VueMarkdown,
@@ -324,7 +327,7 @@ const mainApp = createApp({
       conversations: StorageUtils.getAllConversations(),
       messages: [], // { id: number, role: 'user' | 'assistant', content: string }
       viewingConvId: StorageUtils.getNewConvId(),
-      inputMsg: '',
+      inputMsg: initial_msg,
       isGenerating: false,
       pendingMsg: null, // the on-going message from assistant
       stopGeneration: () => {},
@@ -589,7 +592,13 @@ const mainApp = createApp({
 });
 mainApp.config.errorHandler = alert;
 try {
-  mainApp.mount('#app');
+  const appInstance = mainApp.mount('#app');
+  nextTick().then(() => {
+    if (initial_query)
+      appInstance.sendMessage();
+    else if (initial_msg)
+      setTimeout(() => document.getElementById('msg-input').focus(), 1);
+  });
 } catch (err) {
   console.error(err);
   document.getElementById('app').innerHTML = `<div style="margin:2em auto">
