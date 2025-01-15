@@ -1151,9 +1151,9 @@ struct gguf_writer {
             buf.push_back(reinterpret_cast<const int8_t *>(&val)[i]);
 #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
             buf.push_back(reinterpret_cast<const int8_t *>(&val)[sizeof(val) - i - 1]);
-#else
+#else // __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #error Unexpected or undefined __BYTE_ORDER__
-#endif
+#endif // __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
         }
     }
 
@@ -1266,9 +1266,9 @@ struct gguf_writer {
                     write(kv.get_val<double>(i));
                 }
             } break;
-#else
+#else // __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #error Unexpected or undefined __BYTE_ORDER__
-#endif
+#endif // __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
             case GGUF_TYPE_BOOL: {
                 for (size_t i = 0; i < ne; ++i) {
                     write(kv.get_val<bool>(i));
@@ -1324,7 +1324,7 @@ struct gguf_writer {
         if (byteswap != nullptr) {
             byteswap(buf.data() + offset, ggml_nelements(&(info.t)) / ggml_blck_size(info.t.type));
         }
-#endif
+#endif // __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 
         pad(alignment);
     }
