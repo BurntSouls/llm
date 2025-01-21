@@ -758,8 +758,9 @@ static std::pair<int, int> test_handcrafted_file(const unsigned int seed) {
 
         struct ggml_context * ctx = nullptr;
         struct gguf_init_params gguf_params = {
-            /*no_alloc =*/ false,
-            /*ctx      =*/ hft >= offset_has_data ? &ctx : nullptr,
+            /*no_alloc    =*/ false,
+            /*ctx         =*/ hft >= offset_has_data ? &ctx : nullptr,
+            /*no_byteswap =*/ false,
         };
 
         struct gguf_context * gguf_ctx = gguf_init_from_file_impl(file, gguf_params);
@@ -1154,8 +1155,9 @@ static std::pair<int, int> test_roundtrip(ggml_backend_dev_t dev, const unsigned
 
     struct ggml_context * ctx_1 = nullptr;
     struct gguf_init_params gguf_params = {
-        /*no_alloc =*/ false,
-        /*ctx      =*/ only_meta ? nullptr : &ctx_1,
+        /*no_alloc    =*/ false,
+        /*ctx         =*/ only_meta ? nullptr : &ctx_1,
+        /*no_byteswap =*/ false,
     };
     struct gguf_context * gguf_ctx_1 = gguf_init_from_file_impl(file, gguf_params);
 
