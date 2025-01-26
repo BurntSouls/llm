@@ -151,9 +151,20 @@ struct common_sampler * common_sampler_init(const struct llama_model * model, co
 
     lparams.no_perf = params.no_perf;
 
+    struct llama_sampler * grmr;
+    if (params.grammar.compare(0, 11, "%llguidance") == 0) {
+#ifdef LLAMA_USE_LLGUIDANCE
+        grmr = llama_sampler_init_llg(vocab, "lark", params.grammar.c_str());
+#else
+        GGML_ABORT("llguidance (cmake -DLLAMA_LLGUIDANCE=ON) is not enabled");
+#endif // LLAMA_USE_LLGUIDANCE
+    } else {
+        grmr = llama_sampler_init_grammar(vocab, params.grammar.c_str(), "root");
+    }
+
     auto * result = new common_sampler {
         /* .params = */ params,
-        /* .grmr   = */ llama_sampler_init_grammar(vocab, params.grammar.c_str(), "root"),
+        /* .grmr   = */ grmr,
         /* .chain  = */ llama_sampler_chain_init(lparams),
         /* .prev   = */ ring_buffer<llama_token>(std::max(32, params.n_prev)),
         /* .cur    = */ {},
