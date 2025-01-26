@@ -2,7 +2,7 @@ import pytest
 from openai import OpenAI
 from utils import *
 
-server = ServerPreset.tinyllama2()
+server: ServerProcess
 
 @pytest.fixture(autouse=True)
 def create_server():
@@ -186,6 +186,186 @@ def test_chat_completion_with_timings_per_token():
         assert "predicted_per_second" in data["timings"]
         assert "predicted_n" in data["timings"]
         assert data["timings"]["predicted_n"] <= 10
+
+
+TEST_TOOL = {
+    "type":"function",
+    "function": {
+        "name": "test",
+        "description": "",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean", "const": True},
+            },
+            "required": ["success"]
+        }
+    }
+}
+
+PYTHON_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "python",
+        "description": "Runs code in an ipython interpreter and returns the result of the execution after 60 seconds.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "The code to run in the ipython interpreter."
+                }
+            },
+            "required": ["code"]
+        }
+    }
+}
+
+CODE_INTEPRETER_TOOL = {
+    "type": "code_interpreter",
+}
+
+
+@pytest.mark.parametrize("template_name,n_predict,tool,argument_key", [
+    ("meetkai-functionary-medium-v3.1",               128, TEST_TOOL,   "success"),
+    ("meetkai-functionary-medium-v3.1",               128, PYTHON_TOOL, "code"),
+    ("meetkai-functionary-medium-v3.2",               128, TEST_TOOL,   "success"),
+    ("meetkai-functionary-medium-v3.2",               128, PYTHON_TOOL, "code"),
+    ("NousResearch-Hermes-2-Pro-Llama-3-8B-tool_use", 128, TEST_TOOL,   "success"),
+    ("NousResearch-Hermes-2-Pro-Llama-3-8B-tool_use", 128, PYTHON_TOOL, "code"),
+    ("NousResearch-Hermes-3-Llama-3.1-8B-tool_use",   128, TEST_TOOL,   "success"),
+    ("NousResearch-Hermes-3-Llama-3.1-8B-tool_use",   128, PYTHON_TOOL, "code"),
+    ("meta-llama-Meta-Llama-3.1-8B-Instruct",         128, TEST_TOOL,   "success"),
+    ("meta-llama-Meta-Llama-3.1-8B-Instruct",         128, PYTHON_TOOL, "code"),
+    ("meta-llama-Llama-3.2-3B-Instruct",              128, TEST_TOOL,   "success"),
+    ("meta-llama-Llama-3.2-3B-Instruct",              128, PYTHON_TOOL, "code"),
+    ("mistralai-Mistral-Nemo-Instruct-2407",          128, TEST_TOOL,   "success"),
+    ("mistralai-Mistral-Nemo-Instruct-2407",          128, PYTHON_TOOL, "code"),
+])
+def test_completion_with_required_tool(template_name: str, n_predict: int, tool: dict, argument_key: str):
+    global server
+    # server = ServerPreset.stories15m_moe()
+    server.jinja = True
+    server.n_predict = n_predict
+    server.chat_template_file = f'../../../tests/chat/templates/{template_name}.jinja'
+    server.start()
+    res = server.make_request("POST", "/chat/completions", data={
+        "max_tokens": n_predict,
+        "messages": [
+            {"role": "system", "content": "You are a coding assistant."},
+            {"role": "user", "content": "Write an example"},
+        ],
+        "tool_choice": "required",
+        "tools": [tool],
+        "parallel_tool_calls": False,
+        "temperature": 0.0,
+        "top_k": 1,
+        "top_p": 1.0,
+    })
+    assert res.status_code == 200, f"Expected status code 200, got {res.status_code}"
+    choice = res.body["choices"][0]
+    tool_calls = choice["message"].get("tool_calls")
+    assert tool_calls and len(tool_calls) == 1, f'Expected 1 tool call in {choice["message"]}'
+    tool_call = tool_calls[0]
+    assert tool["function"]["name"] == tool_call["function"]["name"]
+    actual_arguments = json.loads(tool_call["function"]["arguments"])
+    assert argument_key in actual_arguments, f"tool arguments: {json.dumps(actual_arguments)}, expected: {argument_key}"
+
+
+@pytest.mark.parametrize("template_name,n_predict,tools,tool_choice", [
+    ("meetkai-functionary-medium-v3.1",               128, [],            None),
+    ("meetkai-functionary-medium-v3.1",               128, [TEST_TOOL],   None),
+    ("meetkai-functionary-medium-v3.1",               128, [PYTHON_TOOL], 'none'),
+    ("meetkai-functionary-medium-v3.2",               128, [],            None),
+    ("meetkai-functionary-medium-v3.2",               128, [TEST_TOOL],   None),
+    ("meetkai-functionary-medium-v3.2",               128, [PYTHON_TOOL], 'none'),
+    ("meta-llama-Meta-Llama-3.1-8B-Instruct",         128, [],            None),
+    ("meta-llama-Meta-Llama-3.1-8B-Instruct",         128, [TEST_TOOL],   None),
+    ("meta-llama-Meta-Llama-3.1-8B-Instruct",         128, [PYTHON_TOOL], 'none'),
+])
+def test_completion_without_tool_call(template_name: str, n_predict: int, tools: list[dict], tool_choice: str | None):
+    global server
+    server.jinja = True
+    server.n_predict = n_predict
+    server.chat_template_file = f'../../../tests/chat/templates/{template_name}.jinja'
+    server.start()
+    res = server.make_request("POST", "/chat/completions", data={
+        "max_tokens": n_predict,
+        "messages": [
+            {"role": "system", "content": "You are a coding assistant."},
+            {"role": "user", "content": "say hello world with python"},
+        ],
+        "tools": tools if tools else None,
+        "tool_choice": tool_choice,
+        "temperature": 0.0,
+        "top_k": 1,
+        "top_p": 1.0,
+    })
+    assert res.status_code == 200, f"Expected status code 200, got {res.status_code}"
+    choice = res.body["choices"][0]
+    assert choice["message"].get("tool_calls") is None, f'Expected no tool call in {choice["message"]}'
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("tool,expected_arguments,hf_repo,hf_file,template_override", [
+    (PYTHON_TOOL,          {"code": "print('Hello, World!')"},   "bartowski/gemma-2-2b-it-GGUF", "gemma-2-2b-it-Q4_K_M.gguf", None),
+    (CODE_INTEPRETER_TOOL, {"code": "print('Hello, World!')"},   "bartowski/gemma-2-2b-it-GGUF", "gemma-2-2b-it-Q4_K_M.gguf", None),
+    (PYTHON_TOOL,          {"code": "print('Hello, World!')"},   "bartowski/Phi-3.5-mini-instruct-GGUF", "Phi-3.5-mini-instruct-Q4_K_M.gguf", None),
+    (CODE_INTEPRETER_TOOL, {"code": "print('Hello, World!')"},   "bartowski/Phi-3.5-mini-instruct-GGUF", "Phi-3.5-mini-instruct-Q4_K_M.gguf", None),
+    (PYTHON_TOOL,          {"code": "print('Hello World!')"},    "bartowski/Qwen2.5-7B-Instruct-GGUF", "Qwen2.5-7B-Instruct-Q4_K_M.gguf", None),
+    (CODE_INTEPRETER_TOOL, {"code": "print('Hello World!')"},    "bartowski/Qwen2.5-7B-Instruct-GGUF", "Qwen2.5-7B-Instruct-Q4_K_M.gguf", None),
+    (PYTHON_TOOL,          {"code": "print('Hello, world!')"},   "NousResearch/Hermes-2-Pro-Llama-3-8B-GGUF", "Hermes-2-Pro-Llama-3-8B-Q4_K_M.gguf", ("NousResearch/Hermes-2-Pro-Llama-3-8B", "tool_use")),
+    (CODE_INTEPRETER_TOOL, {"code": "print('Hello, world!')"},   "NousResearch/Hermes-2-Pro-Llama-3-8B-GGUF", "Hermes-2-Pro-Llama-3-8B-Q4_K_M.gguf", ("NousResearch-Hermes-2-Pro-Llama-3-8B", "tool_use")),
+    (PYTHON_TOOL,          {"code": "print('Hello World!')"},    "NousResearch/Hermes-3-Llama-3.1-8B-GGUF", "Hermes-3-Llama-3.1-8B.Q4_K_M.gguf", ("NousResearch-Hermes-3-Llama-3.1-8B", "tool_use")),
+    (CODE_INTEPRETER_TOOL, {"code": "print('Hello World!')"},    "NousResearch/Hermes-3-Llama-3.1-8B-GGUF", "Hermes-3-Llama-3.1-8B.Q4_K_M.gguf", ("NousResearch-Hermes-3-Llama-3.1-8B", "tool_use")),
+    (PYTHON_TOOL,          {"code": "print(\"Hello, World!\")"}, "bartowski/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf", ("meta-llama-Llama-3.2-3B-Instruct", None)),
+    (CODE_INTEPRETER_TOOL, {"code": "print(\"Hello, World!\")"}, "bartowski/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf", ("meta-llama-Llama-3.2-3B-Instruct", None)),
+    (PYTHON_TOOL,          {"code": "print("},                   "bartowski/Llama-3.2-3B-Instruct-GGUF", "Llama-3.2-3B-Instruct-Q4_K_M.gguf", ("meta-llama-Llama-3.2-3B-Instruct", None)),
+    (CODE_INTEPRETER_TOOL, {"code": "print("},                   "bartowski/Llama-3.2-3B-Instruct-GGUF", "Llama-3.2-3B-Instruct-Q4_K_M.gguf", ("meta-llama-Llama-3.2-3B-Instruct", None)),
+    (PYTHON_TOOL,          {"code": "print(\"hello world\")"},   "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF", "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", None),
+    (CODE_INTEPRETER_TOOL, {"code": "print("},                   "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF", "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", None),
+    (PYTHON_TOOL,          {"code": "print('Hello, World!')\n"}, "bartowski/Mistral-Nemo-Instruct-2407-GGUF", "Mistral-Nemo-Instruct-2407-Q6_K_L.gguf", None),
+    (CODE_INTEPRETER_TOOL, {"code": "print('Hello, World!')\n"}, "bartowski/Mistral-Nemo-Instruct-2407-GGUF", "Mistral-Nemo-Instruct-2407-Q6_K_L.gguf", ("mistralai-Mistral-Nemo-Instruct-2407", None)),
+    # TODO: fix this model
+    # (PYTHON_TOOL,          {"code": "print('Hello, World!')"},  "bartowski/functionary-small-v3.2-GGUF", "functionary-small-v3.2-Q8_0.gguf", ("meetkai-functionary-medium-v3.2", None)),
+    # (CODE_INTEPRETER_TOOL, {"code": "print('Hello, World!')"},  "bartowski/functionary-small-v3.2-GGUF", "functionary-small-v3.2-Q8_0.gguf", ("meetkai-functionary-medium-v3.2", None)),
+])
+def test_hello_world_tool_call(tool: dict, expected_arguments: dict, hf_repo: str, hf_file: str, template_override: Tuple[str, str | None] | None):
+    global server
+    server.n_slots = 1
+    server.jinja = True
+    server.n_ctx = 8192
+    server.n_predict = 128
+    server.model_hf_repo = hf_repo
+    server.model_hf_file = hf_file
+    if template_override:
+        (template_hf_repo, template_variant) = template_override
+        server.chat_template_file = f"../../../tests/chat/templates/{template_hf_repo.replace('/', '') + ('-' + template_variant if template_variant else '')}.jinja"
+        assert os.path.exists(server.chat_template_file), f"Template file {server.chat_template_file} does not exist. Run `python scripts/get_hf_chat_template.py {template_hf_repo} {template_variant} > {server.chat_template_file}` to download the template."
+    server.start(timeout_seconds=15*60)
+    res = server.make_request("POST", "/chat/completions", data={
+        "max_tokens": 256,
+        "messages": [
+            {"role": "system", "content": "You are a coding assistant."},
+            # {"role": "user", "content": "say hello world with python"},
+            {"role": "user", "content": "Print a hello world message with python"},
+        ],
+        "tools": [tool],
+        "temperature": 0.5,
+        "top_k": 10,
+        "top_p": 0.9,
+    })
+    assert res.status_code == 200, f"Expected status code 200, got {res.status_code}"
+    choice = res.body["choices"][0]
+    tool_calls = choice["message"].get("tool_calls")
+    assert tool_calls and len(tool_calls) == 1, f'Expected 1 tool call in {choice["message"]}'
+    tool_call = tool_calls[0]
+    if tool["type"] == "function":
+        assert tool["function"]["name"] == tool_call["function"]["name"]
+    elif tool["type"] == "code_interpreter":
+        assert re.match('i?python', tool_call["function"]["name"])
+    actual_arguments = json.loads(tool_call["function"]["arguments"])
+    assert json.dumps(expected_arguments) == json.dumps(actual_arguments), f"tool arguments: {json.dumps(actual_arguments)}, expected: {json.dumps(expected_arguments)}"
 
 
 def test_logprobs():

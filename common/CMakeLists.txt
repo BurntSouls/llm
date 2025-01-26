@@ -72,6 +72,7 @@ add_library(${TARGET} STATIC
     sampling.h
     speculative.cpp
     speculative.h
+    tool-call.cpp
     )
 
 if (BUILD_SHARED_LIBS)

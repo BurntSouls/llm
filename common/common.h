@@ -155,6 +155,8 @@ struct common_params_sampling {
     };
 
     std::string grammar; // optional BNF-like grammar to constrain sampling
+    std::vector<std::string> grammar_trigger_words;  // optional trigger words to enable grammar
+    std::vector<llama_token> grammar_trigger_tokens; // optional trigger tokens to enable grammar
 
     std::vector<llama_logit_bias> logit_bias; // logit biases to apply
 
@@ -602,10 +604,17 @@ std::string common_detokenize(
 // Chat template utils
 //
 
+struct common_tool_call {
+    std::string name;
+    std::string arguments;
+    std::string id;
+};
+
 // same with llama_chat_message, but uses std::string
 struct common_chat_msg {
     std::string role;
     std::string content;
+    std::vector<common_tool_call> tool_calls;
 };
 
 // Check if the template supplied via "--chat-template" is supported or not. Returns true if it's valid

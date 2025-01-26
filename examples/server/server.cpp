@@ -113,10 +113,12 @@ struct slot_params {
     struct common_params_speculative speculative;
 
     // OAI-compat fields
-    bool           verbose        = false;
-    oaicompat_type oaicompat      = OAICOMPAT_TYPE_NONE;
-    std::string    oaicompat_model;
-    std::string    oaicompat_cmpl_id;
+    bool                  verbose                   = false;
+    oaicompat_type        oaicompat                 = OAICOMPAT_TYPE_NONE;
+    std::string           oaicompat_model;
+    std::string           oaicompat_cmpl_id;
+    json                  oaicompat_tools;
+    common_tool_call_style oaicompat_tool_call_style = common_tool_call_style::COMMON_TOOL_CALL_STYLE_NONE;
 
     json to_json() const {
         std::vector<std::string> samplers;
@@ -164,6 +166,8 @@ struct slot_params {
             {"n_probs",                   sampling.n_probs},
             {"min_keep",                  sampling.min_keep},
             {"grammar",                   sampling.grammar},
+            {"grammar_trigger_words",     sampling.grammar_trigger_words},
+            {"grammar_trigger_tokens",    sampling.grammar_trigger_tokens},
             {"samplers",                  samplers},
             {"speculative.n_max",         speculative.n_max},
             {"speculative.n_min",         speculative.n_min},
@@ -333,6 +337,13 @@ struct server_task {
             params.sampling.grammar = json_value(data, "grammar", defaults.sampling.grammar);
         }
 
+        if (data.contains("tools")) {
+            params.oaicompat_tools = data.at("tools");
+        }
+        if (data.contains("tool_call_style")) {
+            params.oaicompat_tool_call_style = data.at("tool_call_style");
+        }
+
         {
             params.sampling.logit_bias.clear();
             params.ignore_eos = json_value(data, "ignore_eos", false);
@@ -368,36 +379,47 @@ struct server_task {
             }
         }
 
+        auto to_string_vec = [](const json & j) {
+            std::vector<std::string> out;
+            if (j.is_array()) {
+                for (const auto & e : j) {
+                    if (e.is_string()) {
+                        out.push_back(e);
+                    }
+                }
+            }
+            return out;
+        };
+
         {
             params.antiprompt.clear();
+            const auto stop = data.find("stop");
+            if (stop != data.end()) {
+                params.antiprompt = to_string_vec(*stop);
+            }
+        }
 
-            const auto & stop = data.find("stop");
-            if (stop != data.end() && stop->is_array()) {
-                for (const auto & word : *stop) {
-                    if (!word.empty()) {
-                        params.antiprompt.push_back(word);
+        {
+            const auto grammar_trigger_words = data.find("grammar_trigger_words");
+            if (grammar_trigger_words != data.end()) {
+                for (const auto & word : to_string_vec(*grammar_trigger_words)) {
+                    auto ids = common_tokenize(vocab, word, /* add_special= */ false, /* parse_special= */ true);
+                    if (ids.size() == 1) {
+                        params.sampling.grammar_trigger_tokens.push_back(ids[0]);
+                        continue;
                     }
+                    params.sampling.grammar_trigger_words.push_back(word);
                 }
             }
         }
 
         {
-            const auto & samplers = data.find("samplers");
+            const auto samplers = data.find("samplers");
             if (samplers != data.end()) {
                 if (samplers->is_array()) {
-                    std::vector<std::string> sampler_names;
-                    for (const auto & name : *samplers) {
-                        if (name.is_string()) {
-                            sampler_names.emplace_back(name);
-                        }
-                    }
-                    params.sampling.samplers = common_sampler_types_from_names(sampler_names, false);
+                    params.sampling.samplers = common_sampler_types_from_names(to_string_vec(*samplers), false);
                 } else if (samplers->is_string()){
-                    std::string sampler_string;
-                    for (const auto & name : *samplers) {
-                        sampler_string += name;
-                    }
-                    params.sampling.samplers = common_sampler_types_from_chars(sampler_string);
+                    params.sampling.samplers = common_sampler_types_from_chars(samplers->get<std::string>());
                 }
             } else {
                 params.sampling.samplers = defaults.sampling.samplers;
@@ -566,10 +588,12 @@ struct server_task_result_cmpl_final : server_task_result {
     slot_params generation_params;
 
     // OAI-compat fields
-    bool           verbose        = false;
-    oaicompat_type oaicompat = OAICOMPAT_TYPE_NONE;
-    std::string    oaicompat_model;
-    std::string    oaicompat_cmpl_id;
+    bool                  verbose                  = false;
+    oaicompat_type        oaicompat                = OAICOMPAT_TYPE_NONE;
+    std::string           oaicompat_model;
+    std::string           oaicompat_cmpl_id;
+    json                  oaicompat_tools;
+    common_tool_call_style oaicompat_tool_call_style = common_tool_call_style::COMMON_TOOL_CALL_STYLE_NONE;
 
     virtual int get_index() override {
         return index;
@@ -667,14 +691,40 @@ struct server_task_result_cmpl_final : server_task_result {
             finish_reason = "stop";
         }
 
-        json choice = json{
+        json tool_calls;
+        json message_content;
+        if (oaicompat_tool_call_style != common_tool_call_style::COMMON_TOOL_CALL_STYLE_NONE && !oaicompat_tools.is_null()) {
+            auto parsed_tool_calls = parse_tool_calls(oaicompat_tool_call_style, oaicompat_tools, content);
+            if (!parsed_tool_calls.tool_calls.empty()) {
+                finish_reason = "tool_calls";
+                message_content = parsed_tool_calls.content;
+                tool_calls = json::array();
+                for (const auto & tc : parsed_tool_calls.tool_calls) {
+                    tool_calls.push_back({
+                        {"type", "function"},
+                        {"function", {
+                            {"name", tc.name},
+                            {"arguments", tc.arguments},
+                        }},
+                        {"id", tc.id.empty() ? json() : json(tc.id)},
+                    });
+                }
+            } else {
+                message_content = parsed_tool_calls.content;
+            }
+        } else {
+            message_content = content;
+        }
+
+        json choice {
             {"finish_reason", finish_reason},
             {"index", 0},
             {"message", json {
-                {"content", content},
-                {"role",    "assistant"}
-            }
-        }};
+                {"content", message_content},
+                {"tool_calls", tool_calls},
+                {"role", "assistant"},
+            }},
+        };
 
         if (!stream && probs_output.size() > 0) {
             choice["logprobs"] = json{
@@ -716,7 +766,7 @@ struct server_task_result_cmpl_final : server_task_result {
             finish_reason = "stop";
         }
 
-        json choice = json{
+        json choice = json {
             {"finish_reason", finish_reason},
             {"index", 0},
             {"delta", json::object()}
@@ -2295,6 +2345,8 @@ struct server_context {
         res->oaicompat         = slot.params.oaicompat;
         res->oaicompat_model   = slot.params.oaicompat_model;
         res->oaicompat_cmpl_id = slot.params.oaicompat_cmpl_id;
+        res->oaicompat_tools   = slot.params.oaicompat_tools;
+        res->oaicompat_tool_call_style = slot.params.oaicompat_tool_call_style;
 
         // populate res.probs_output
         if (slot.params.sampling.n_probs > 0) {
@@ -2773,6 +2825,11 @@ struct server_context {
         // track if given slot can be batched with slots already in the batch
         server_slot * slot_batched = nullptr;
 
+        auto accept_special_token = [&](llama_token token) {
+            const auto & trigger_tokens = params_base.sampling.grammar_trigger_tokens;
+            return params_base.special || std::find(trigger_tokens.begin(), trigger_tokens.end(), token) != trigger_tokens.end();
+        };
+
         // frist, add sampled tokens from any ongoing sequences
         for (auto & slot : slots) {
             if (slot.state != SLOT_STATE_GENERATING) {
@@ -3136,7 +3193,7 @@ struct server_context {
 
                 completion_token_output result;
                 result.tok          = id;
-                result.text_to_send = common_token_to_piece(ctx, result.tok, params_base.special);
+                result.text_to_send = common_token_to_piece(ctx, result.tok, accept_special_token(result.tok));
                 result.prob         = 1.0f; // TODO: set it here instead of doing inside populate_token_probs
 
                 if (slot.params.sampling.n_probs > 0) {
@@ -3225,7 +3282,7 @@ struct server_context {
                     completion_token_output result;
 
                     result.tok          = ids[i];
-                    result.text_to_send = common_token_to_piece(ctx, result.tok, params_base.special);
+                    result.text_to_send = common_token_to_piece(ctx, result.tok, accept_special_token(result.tok));
                     result.prob         = 1.0f; // set later
 
                     // TODO: set result.probs
@@ -3722,6 +3779,8 @@ int main(int argc, char ** argv) {
             { "total_slots",                 ctx_server.params_base.n_parallel },
             { "model_path",                  ctx_server.params_base.model },
             { "chat_template",               ctx_server.chat_templates.template_default->source() },
+            { "bos_token",                   ctx_server.chat_templates.template_default->bos_token() },
+            { "eos_token",                   ctx_server.chat_templates.template_default->eos_token() },
             { "build_info",                  build_info },
         };
         if (ctx_server.params_base.use_jinja && ctx_server.chat_templates.template_tool_use) {
@@ -3751,7 +3810,8 @@ int main(int argc, char ** argv) {
             json & data,
             std::function<bool()> is_connection_closed,
             httplib::Response & res,
-            oaicompat_type oaicompat) {
+            oaicompat_type oaicompat,
+            common_tool_call_style tool_call_style = common_tool_call_style::COMMON_TOOL_CALL_STYLE_NONE) {
         GGML_ASSERT(type == SERVER_TASK_TYPE_COMPLETION || type == SERVER_TASK_TYPE_INFILL);
 
         if (ctx_server.params_base.embedding) {
@@ -3779,8 +3839,10 @@ int main(int argc, char ** argv) {
                 task.id_selected_slot = json_value(data, "id_slot", -1);
 
                 // OAI-compat
-                task.params.oaicompat         = oaicompat;
-                task.params.oaicompat_cmpl_id = completion_id;
+                task.params.oaicompat                 = oaicompat;
+                task.params.oaicompat_cmpl_id         = completion_id;
+                task.params.oaicompat_tools           = json_value(data, "tools", json());
+                task.params.oaicompat_tool_call_style = tool_call_style;
                 // oaicompat_model is already populated by params_from_json_cmpl
 
                 tasks.push_back(task);
@@ -3956,14 +4018,18 @@ int main(int argc, char ** argv) {
 
         auto body = json::parse(req.body);
         const auto & chat_template = body.contains("tools") && ctx_server.chat_templates.template_tool_use ? *ctx_server.chat_templates.template_tool_use : *ctx_server.chat_templates.template_default;
-        json data = oaicompat_completion_params_parse(body, chat_template, params.use_jinja);
+        auto tool_call_style = common_tool_call_style_detect(chat_template);
+        LOG_INF("Tool call style: %s\n", common_tool_call_style_name(tool_call_style).c_str());
+
+        json data = oaicompat_completion_params_parse(body, chat_template, tool_call_style, params.use_jinja);
 
         return handle_completions_impl(
             SERVER_TASK_TYPE_COMPLETION,
             data,
             req.is_connection_closed,
             res,
-            OAICOMPAT_TYPE_CHAT);
+            OAICOMPAT_TYPE_CHAT,
+            tool_call_style);
     };
 
     const auto handle_models = [&params, &ctx_server, &res_ok](const httplib::Request &, httplib::Response & res) {
