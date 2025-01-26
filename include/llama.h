@@ -229,6 +229,18 @@ extern "C" {
         bool sorted;
     } llama_token_data_array;
 
+    // Structure represents the basic input unit of vision model
+    // This can be a processed image or slices of images under the hood
+    struct llama_vision_tokens;
+
+    // represent an RGB image
+    // size of data must be equal to 3*nx*ny
+    typedef struct llama_vision_bitmap {
+        uint32_t nx;
+        uint32_t ny;
+        unsigned char * data;
+    } llama_vision_bitmap;
+
     typedef bool (*llama_progress_callback)(float progress, void * user_data);
 
     // Input data for llama_decode
@@ -253,6 +265,8 @@ extern "C" {
         int32_t      *  n_seq_id;
         llama_seq_id ** seq_id;
         int8_t       *  logits; // TODO: rename this to "output"
+
+        struct ggml_tensor *  embd_tensor;
     } llama_batch;
 
     enum llama_model_kv_override_type {
@@ -845,6 +859,10 @@ extern "C" {
             int32_t embd,
             int32_t n_seq_max);
 
+    // Allocates a batch based on a tensor, only used by vision API for now
+    // Unlike llama_batch_get_one, this will need to be freed after use
+    LLAMA_API struct llama_batch llama_batch_get_one_from_tensor(struct ggml_tensor * tensor, int32_t p0, int32_t seq_id);
+
     // Frees a batch of tokens allocated with llama_batch_init()
     LLAMA_API void llama_batch_free(struct llama_batch batch);
 
@@ -1262,6 +1280,25 @@ extern "C" {
 
     // TODO: extend in the future
     //LLAMA_API void llama_decode_with_sampler(struct llama_context * ctx, struct llama_sampler * smpl, struct llama_batch batch, ...);
+
+    //
+    // Vision API
+    //
+
+    // Container for RGB bitmap
+    LLAMA_API struct llama_vision_bitmap * llama_vision_bitmap_init(uint32_t nx, uint32_t ny);
+    LLAMA_API void llama_vision_bitmap_free(struct llama_vision_bitmap * bmp);
+
+    // Create image tokens from the RGB bitmap
+    LLAMA_API struct llama_vision_tokens * llama_vision_tokenize(struct llama_context * ctx, llama_vision_bitmap * bmp);
+    LLAMA_API void llama_vision_tokens_free(struct llama_vision_tokens * img_tokens);
+
+    // User must reserve N number of tokens in tokenized text prompt for each image
+    // LLAMA_API int32_t llama_vision_get_n_tokens(const llama_vision_img_tokens * img_tokens);
+
+    // Encode patches into embeddings
+    LLAMA_API int32_t llama_vision_encode(struct llama_context * ctx, struct llama_vision_tokens * img_tokens);
+    LLAMA_API struct ggml_tensor * llama_vision_get_output_tensor(struct llama_context * ctx);
 
     //
     // Model split
