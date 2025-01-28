@@ -883,7 +883,7 @@ static int generate_response(LlamaData & llama_data, const std::string & prompt,
                              const bool stdout_a_terminal) {
     // Set response color
     if (stdout_a_terminal) {
-        printf("\033[32m");
+        printf("\033[34m");
     }
 
     if (generate(llama_data, prompt, response)) {
